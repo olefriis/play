@@ -1,0 +1,55 @@
+<html>
+  <head>
+    <title>Stunt Car Racer</title>
+  </head>
+  <body>
+    <h1>Stunt Car Racer</h1>
+    <p>Do you remember the game <a href="https://en.wikipedia.org/wiki/Stunt_Car_Racer">Stunt Car Racer</a> from 1989?
+      It was available on Amiga, Commodore 64, and other computers at the time. It was awesome!! If you don't remember,
+      then consider <a href="https://www.youtube.com/watch?v=q7w_0yP5RwU">watching a longplay video</a> of the game.</p>
+
+    <p>Now, somebody got hold of the original Amiga source code, converted it to C++, created a DirectX game, and
+      <a href="https://sourceforge.net/projects/stuntcarremake/">put it on SourceForge</a> (remember SourceForge?). This
+      was an enormous achievement! However, I don't want to boot up a Windows machine (or a VM) to play the game. I want
+      it on my mobile phone, on my iPad, on my son's Chromebook, in my own browser.</p>
+
+    <p>So I've been working on replacing the DirectX calls in the code with OpenGL calls, so that I can compile the whole
+      thing with <a href="https://emscripten.org">emscripten</a> so that I get some HTML, some JavaScript, and some
+      WebAssembly.</p>
+    
+    <p>It's pretty far from being done! But you can <a href="./source.html">play it here!</a>.</p>
+
+    <p>You need a keyboard to play the game. Quick overview of controls:
+      <ul>
+        <li>On the main menu:
+          <ul>
+            <li>1-8: Switch between tracks.</li>
+            <li>S: Select current track.</li>
+          </ul>
+        </li>
+        <li>On the track preview page:
+          <ul>
+            <li>S: Start the game.</li>
+            <li>M: Back to the main menu.</li>
+            </ul>
+        </li>
+        <li>In the game:
+          <ul>
+            <li>Arrow keys: What you think they do.</li>
+            <li>Return key: Forward boost.</li>
+            <li>Space key: Backward boost.</li>
+            <li>P: Pause.</li>
+            <li>O: Unpause.</li>
+            <li>M: Back to the main menu.</li>
+          </ul>
+        </li>
+      </ul>
+    </p>
+
+    <p>I'm planning on adding some proper overlay with text and on-screen controls.</p>
+
+    <p>And I'm totally gonna spam the world with some blog posts at a later time!</p>
+
+    <p>But... enjoy!</p>
+  </body>
+</html>
