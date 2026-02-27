@@ -91,6 +91,7 @@
   var UI_MP_JOIN_LOBBY    = 'mp_join_lobby';
   var UI_MP_RACE          = 'mp_race';
   var UI_MP_RESULT        = 'mp_result';
+  var UI_CREDITS           = 'credits';
 
   var uiMode = UI_MAIN_MENU;
 
@@ -737,7 +738,7 @@
   function showMpRoleSelect() {
     uiMode = UI_MP_ROLE_SELECT;
     var h = '<div class="overlay-title">Two Players</div>';
-    h += '<div class="overlay-description">Connect via WebRTC peer-to-peer</div>';
+    h += '<div class="overlay-subtitle" style="color:#ff6;margin-bottom:1vh;">\u26A0\uFE0E Works best on a local network</div>';
     h += '<div class="overlay-label">Signaling server</div>';
     h += '<input id="mp-sig-url" type="text" class="multiplayer-signaling-input" value="' +
       signalingUrl.replace(/"/g, '&quot;') + '" />';
@@ -978,6 +979,7 @@
     h += '<div id="mm-btn-practise" class="overlay-button">Practise</div><br>';
     h += '<div id="mm-btn-season" class="overlay-button">Start the Racing Season</div><br>';
     h += '<div id="mm-btn-twoplayer" class="overlay-button">Two Players</div>';
+    h += '<div id="mm-btn-credits" class="overlay-button credits-btn">?</div>';
     showOverlay(h);
     overlayBtn('mm-btn-practise', 'PRACTISE', function () {
       hideOverlay();
@@ -993,6 +995,32 @@
     overlayBtn('mm-btn-twoplayer', 'TWO PLAYERS', function () {
       hideOverlay();
       showMpRoleSelect();
+    });
+    overlayBtn('mm-btn-credits', 'CREDITS', function () {
+      showCredits();
+    });
+  }
+
+  function showCredits() {
+    uiMode = UI_CREDITS;
+    var h = '<div class="credits-text">';
+    h += '<h1>Original Game</h1>';
+    h += '<h2>Program and Design</h2><p>Geoff Crammond</p>';
+    h += '<h2>Additional Graphics</h2><p>John Cumming</p>';
+    h += '<h1>Conversion of Amiga Source Code to Windows/DirectX</h1>';
+    h += '<p>Andrew Copland</p>';
+    h += '<h1>Smooth Framerate Patch</h1>';
+    h += '<p>Tom Seddon</p>';
+    h += '<h1>Web and Mobile Version, Two-Player Version, etc.</h1>';
+    h += '<p>Ole Friis</p>';
+    h += '<p class="credits-aside">(With a lot of assistance from Claude...)</p>';
+    h += '<h1>Technology</h1>';
+    h += '<p>This project is built using <a href="https://emscripten.org" target="_blank" rel="noopener">Emscripten</a>.</p>';
+    h += '</div>';
+    h += '<div id="credits-btn-back" class="overlay-button">Back</div>';
+    showOverlay(h);
+    overlayBtn('credits-btn-back', 'BACK', function () {
+      showMainMenu();
     });
   }
 
@@ -1118,6 +1146,10 @@
 
   function wireKeyboard() {
     document.addEventListener('keydown', function (e) {
+      // Don't intercept keys when typing in an input field
+      var tag = document.activeElement && document.activeElement.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
       // Season overlay: Enter/Space → primary button, Escape → quit
       if (uiMode === UI_SEASON_OVERVIEW || uiMode === UI_SEASON_PRE_RACE || uiMode === UI_SEASON_RESULT || uiMode === UI_SEASON_STANDINGS) {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -1157,6 +1189,13 @@
             var b = document.getElementById('mp-btn-next');
             if (b) b.click();
           }
+        }
+        return;
+      }
+
+      if (uiMode === UI_CREDITS) {
+        if (e.key === 'Escape' || e.key === 'Backspace' || e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault(); showMainMenu();
         }
         return;
       }
