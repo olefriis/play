@@ -111,8 +111,13 @@
   var season = null;
   var humanDivision = 0;
   var superLeague = false;
+  var damageHolePosition = 10;  // 10 = fully intact, 0 = all holes
   var currentDivisionAssignments = INITIAL_DIVISIONS.slice();
   var seasonStartDivisionAssignments = null; // division assignments snapshot at season start
+  var seasonStartDamageHolePosition = null; // hole position snapshot at season start
+
+  // Holes repaired at end of season based on standings position (1st–4th)
+  var REPAIR_TABLE = [3, 2, 1, 0];
 
   var STORAGE_KEY = 'scr_progress';
 
@@ -121,9 +126,11 @@
       var data = {
         humanDivision: humanDivision,
         superLeague: superLeague,
+        damageHolePosition: damageHolePosition,
         currentDivisionAssignments: currentDivisionAssignments,
         season: season,
-        seasonStartDivisionAssignments: seasonStartDivisionAssignments
+        seasonStartDivisionAssignments: seasonStartDivisionAssignments,
+        seasonStartDamageHolePosition: seasonStartDamageHolePosition
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch (e) { /* localStorage unavailable */ }
@@ -136,9 +143,11 @@
       var data = JSON.parse(raw);
       if (data.humanDivision != null) humanDivision = data.humanDivision;
       if (data.superLeague != null) superLeague = data.superLeague;
+      if (data.damageHolePosition != null) damageHolePosition = data.damageHolePosition;
       if (data.currentDivisionAssignments) currentDivisionAssignments = data.currentDivisionAssignments;
       if (data.season) season = data.season;
       if (data.seasonStartDivisionAssignments) seasonStartDivisionAssignments = data.seasonStartDivisionAssignments;
+      if (data.seasonStartDamageHolePosition != null) seasonStartDamageHolePosition = data.seasonStartDamageHolePosition;
     } catch (e) { /* ignore corrupt data */ }
   }
 
@@ -246,6 +255,7 @@
   function getBoostReserve()   { return Module._jsGetBoostReserve(); }
   function getBoostMax()       { return Module._jsGetBoostMax(); }
   function getDamage()         { return Module._jsGetDamage(); }
+  function getDamageHolePosition() { return Module._jsGetDamageHolePosition(); }
   function getLapNumber()      { return Module._jsGetLapNumber(); }
   function getPlayerBestLap()  { return Module._jsGetPlayerBestLap(); }
   function getOpponentBestLap(){ return Module._jsGetOpponentBestLap(); }
@@ -275,7 +285,7 @@
 
   function selectTrack(index)  { Module._jsSetSuperLeague(superLeague ? 1 : 0); Module._jsSelectTrack(index); }
   function startPreview()      { Module._jsStartPreview(); }
-  function startGame(opp)      { Module._jsStartGame(opp); }
+  function startGame(opp)      { Module._jsSetDamageHolePosition(10); Module._jsStartGame(opp); }
   function goToMenu()          { Module._jsGoToMenu(); }
   function setGameOver()       { Module._jsSetGameOver(); }
 
@@ -375,6 +385,27 @@
 
     // ── HUD: damage bar at top ──
     createHudBar('tc-hud-damage', '\u26A0\uFE0F');
+
+    // Add holes overlay to the damage bar (individual hole markers on the right)
+    (function () {
+      var track = document.querySelector('#tc-hud-damage .hud-track');
+      if (track) {
+        track.style.position = 'relative';
+        var container = document.createElement('div');
+        container.id = 'tc-hud-damage-holes';
+        container.style.cssText = 'position:absolute;right:0;top:0;height:100%;pointer-events:none;display:flex;flex-direction:row-reverse;';
+        container.style.width = '100%';
+        // Create 10 hole marker slots (right-to-left)
+        for (var i = 0; i < 10; i++) {
+          var slot = document.createElement('div');
+          slot.className = 'damage-hole-slot';
+          slot.style.cssText = 'width:10%;height:100%;box-sizing:border-box;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.65);border-left:1px solid rgba(255,60,60,0.4);';
+          slot.innerHTML = '<span style="color:rgba(255,80,80,0.85);font-size:min(2vh,12px);font-weight:bold;line-height:1;text-shadow:0 0 3px rgba(0,0,0,0.8);">✕</span>';
+          container.appendChild(slot);
+        }
+        track.appendChild(container);
+      }
+    })();
 
     // ── HUD: info box (left side) ──
     createHudBox();
@@ -526,6 +557,7 @@
     fadeAndDo(function () {
       selectTrack(race.trackIndex);
       startGame(oppId);
+      Module._jsSetDamageHolePosition(damageHolePosition); // override the default 10 with season damage
       uiMode = UI_SEASON_RACE;
       showUIForMode();
     });
@@ -585,12 +617,17 @@
     var superLeagueChampion = playerWonDivisionOne && superLeague;
 
     if (enteringSuperLeague) {
-      // Entering super league: reset all division assignments
+      // Entering super league: reset all division assignments and fully repair car
       superLeague = true;
       na = INITIAL_DIVISIONS.slice();
       humanDivision = na[HUMAN_PLAYER]; // back to Division 4
+      damageHolePosition = 10; // full repair on super league promotion
     } else {
       humanDivision = na[HUMAN_PLAYER];
+      // Repair holes based on standings position
+      var playerPosition = st.indexOf(HUMAN_PLAYER);
+      var repairAmount = REPAIR_TABLE[playerPosition] || 0;
+      damageHolePosition = Math.min(10, damageHolePosition + repairAmount);
     }
     currentDivisionAssignments = na;
 
@@ -640,6 +677,19 @@
         'Staying in ' + divLabel(di) + '</div>';
     }
 
+    // Show repair info
+    if (enteringSuperLeague) {
+      h += '<div class="overlay-detail">\uD83D\uDD27 Car fully repaired!</div>';
+    } else {
+      var playerPosition = st.indexOf(HUMAN_PLAYER);
+      var repairAmount = REPAIR_TABLE[playerPosition] || 0;
+      if (repairAmount > 0) {
+        h += '<div class="overlay-detail">\uD83D\uDD27 ' + repairAmount + ' hole' + (repairAmount > 1 ? 's' : '') + ' repaired</div>';
+      } else {
+        h += '<div class="overlay-detail">\uD83D\uDD27 No repairs</div>';
+      }
+    }
+
     h += '<div id="s-btn-next" class="overlay-button">Finish Season</div>';
     showOverlay(h);
     overlayBtn('s-btn-next', 'FINISH', finishSeason);
@@ -648,6 +698,7 @@
   function finishSeason() {
     season = null;
     seasonStartDivisionAssignments = null;
+    seasonStartDamageHolePosition = null;
     saveProgress();
     hideOverlay();
     goToMenu();
@@ -662,6 +713,9 @@
     var pBest = getPlayerBestLap();
     var oBest = getOpponentBestLap();
     var opponent = (race.driverA === HUMAN_PLAYER) ? race.driverB : race.driverA;
+
+    // Read back holes — smashes during the race decrement this
+    damageHolePosition = getDamageHolePosition();
 
     if (wrecked) {
       race.winnerDriver = opponent;
@@ -1066,6 +1120,7 @@
       } else {
         fadeAndDo(function () {
           seasonStartDivisionAssignments = currentDivisionAssignments.slice();
+          seasonStartDamageHolePosition = damageHolePosition;
           season = createNewSeason(currentDivisionAssignments.slice());
           saveProgress();
           showSeasonOverview();
@@ -1086,7 +1141,7 @@
 
   function showResetOptions() {
     // If player has progressed beyond Division 4, offer two choices
-    var hasProgressed = humanDivision > 0 || superLeague;
+    var hasProgressed = humanDivision > 0 || superLeague || damageHolePosition < 10;
     var canResetSeason = season && seasonStartDivisionAssignments;
     var h = '<div class="overlay-title">Reset Progress</div>';
     if (canResetSeason && hasProgressed) {
@@ -1106,16 +1161,20 @@
       // Reset to start of current season
       currentDivisionAssignments = seasonStartDivisionAssignments.slice();
       humanDivision = currentDivisionAssignments[HUMAN_PLAYER];
+      damageHolePosition = (seasonStartDamageHolePosition != null) ? seasonStartDamageHolePosition : 10;
       season = null;
       seasonStartDivisionAssignments = null;
+      seasonStartDamageHolePosition = null;
       saveProgress();
       showMainMenu();
     });
     overlayBtn('reset-btn-all', 'RESET ALL', function () {
       season = null;
       seasonStartDivisionAssignments = null;
+      seasonStartDamageHolePosition = null;
       superLeague = false;
       humanDivision = 0;
+      damageHolePosition = 10;
       currentDivisionAssignments = INITIAL_DIVISIONS.slice();
       saveProgress();
       showMainMenu();
@@ -1165,6 +1224,8 @@
         uiMode = UI_MAIN_MENU;
         showUIForMode();
       } else if (uiMode === UI_SEASON_RACE) {
+        // Read back holes before recording the loss
+        damageHolePosition = getDamageHolePosition();
         var race = season.schedule[season.currentRace];
         var opp = (race.driverA === HUMAN_PLAYER) ? race.driverB : race.driverA;
         race.winnerDriver = opp;
@@ -1510,7 +1571,16 @@
     if (uiMode === UI_PRACTISE_RACE || uiMode === UI_SEASON_RACE || uiMode === UI_MP_RACE || uiMode === UI_PRACTISE_RESULT) {
       // Damage bar (top)
       var df = document.getElementById('tc-hud-damage-fill');
-      if (df) df.style.width = Math.min(100, Math.round(100 * getDamage() / 255)) + '%';
+      if (df) df.style.width = Math.min(100, Math.round(100 * getDamage() / 240)) + '%';
+      var dh = document.getElementById('tc-hud-damage-holes');
+      if (dh) {
+        var holePos = getDamageHolePosition();
+        var numHoles = 10 - holePos; // how many holes are punched
+        var slots = dh.children;
+        for (var hi = 0; hi < slots.length; hi++) {
+          slots[hi].style.display = (hi < numHoles) ? 'flex' : 'none';
+        }
+      }
 
       // Vertical speed bar
       var sf = document.getElementById('hud-speed-fill');
