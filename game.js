@@ -96,7 +96,8 @@
   var uiMode = UI_MAIN_MENU;
 
   // Touch drive state (mobile only)
-  var touchDrive = { left: false, right: false, gas: false, brake: false, boost: false };
+  var touchDrive = { left: false, right: false, gas: false, brake: false, gasBoost: false, brakeBoost: false };
+  var activeDriveTouches = {}; // track per-touch state for split buttons
 
   // ── Multiplayer state ──────────────────────────────────────
   var signalingUrl = 'https://stuntcarracer.fly.dev';
@@ -112,6 +113,16 @@
   var humanDivision = 0;
   var superLeague = false;
   var damageHolePosition = 10;  // 10 = fully intact, 0 = all holes
+
+  // ── Boost flame overlay state ──────────────────────────────
+  var boostFrameIndex = 0;
+  var boostFrameTime = 0;
+
+  // ── Wheel overlay state ────────────────────────────────────
+  var wheelFrameNumber = 0;       // current rotation frame 0-2
+  var wheelRotationAccum = 0;     // 16-bit accumulator; overflows trigger frame advance
+  var wheelRotationSpeed = 0;     // 16-bit speed added each game frame
+
   var currentDivisionAssignments = INITIAL_DIVISIONS.slice();
   var seasonStartDivisionAssignments = null; // division assignments snapshot at season start
   var seasonStartDamageHolePosition = null; // hole position snapshot at season start
@@ -271,6 +282,7 @@
   function getBoostReserve()   { return Module._jsGetBoostReserve(); }
   function getBoostMax()       { return Module._jsGetBoostMax(); }
   function getDamage()         { return Module._jsGetDamage(); }
+  function isBoostActive()     { return !!Module._jsIsBoostActive(); }
   function getDamageHolePosition() { return Module._jsGetDamageHolePosition(); }
   function getLapNumber()      { return Module._jsGetLapNumber(); }
   function getPlayerBestLap()  { return Module._jsGetPlayerBestLap(); }
@@ -294,6 +306,9 @@
   function getChainCountdown()          { return Module._jsGetChainCountdown(); }
   function getChainFromLeft()           { return !!Module._jsGetChainSwingFromLeft(); }
   function isChainBoostHintVisible()    { return !!Module._jsIsChainBoostHintVisible(); }
+  function isTouchingRoad()             { return !!Module._jsIsTouchingRoad(); }
+  function getWheelDiffFL()             { return Module._jsGetWheelDiffFL(); }
+  function getWheelDiffFR()             { return Module._jsGetWheelDiffFR(); }
   function setOpponentState(rs, dist, xPos, zSpd, wFL, wFR, wR) {
     Module._jsSetOpponentState(rs, dist, xPos, zSpd, wFL, wFR, wR);
   }
@@ -305,9 +320,28 @@
 
   function selectTrack(index)  { Module._jsSetSuperLeague(superLeague ? 1 : 0); Module._jsSelectTrack(index); }
   function startPreview()      { Module._jsStartPreview(); }
-  function startGame(opp)      { Module._jsSetDamageHolePosition(10); Module._jsStartGame(opp); }
+  function startGame(opp)      {
+    // Reset drive inputs so we don't carry stale state from a previous race
+    touchDrive.left = touchDrive.right = touchDrive.gas = touchDrive.brake = touchDrive.gasBoost = touchDrive.brakeBoost = false;
+    activeDriveTouches = {};
+    setDriveInput(0);
+    Module._jsSetDamageHolePosition(10);
+    Module._jsStartGame(opp);
+  }
   function goToMenu()          { Module._jsGoToMenu(); }
   function setGameOver()       { Module._jsSetGameOver(); }
+
+  // Central exit point for leaving any race. Captures C++ state before
+  // this is called, then: stop the race, fade to black, reset C++ to
+  // menu state, tear down the HUD, and finally run the callback.
+  function leaveRace(callback) {
+    setGameOver();
+    fadeAndDo(function () {
+      goToMenu();
+      hideAllUI();
+      callback();
+    });
+  }
 
   // Cheat mode (only available in CHEAT=1 builds)
   var cheatAvailable = false;
@@ -392,9 +426,10 @@
     // ── In-Game driving controls (mobile only) ──
     element('tc-left', '\u25C0\uFE0E');
     element('tc-right', '\u25B6\uFE0E');
-    element('tc-accel', '\u25B2\uFE0E');
-    element('tc-brake', '\u25BC\uFE0E');
-    element('tc-boost', '\u00A0\uD83D\uDD25\u00A0');
+    var accelBtn = element('tc-accel');
+    accelBtn.innerHTML = '<span class="split-left">\uD83D\uDD25</span><span class="split-right">\u25B2\uFE0E</span>';
+    var brakeBtn = element('tc-brake');
+    brakeBtn.innerHTML = '<span class="split-left">\uD83D\uDD25</span><span class="split-right">\u25BC\uFE0E</span>';
 
     // ── In-Game common ──
     element('tc-menu', '\u2715');
@@ -430,6 +465,44 @@
     // ── HUD: info box (left side) ──
     createHudBox();
 
+    // ── Cockpit overlay (race HUD: PNG frame + speed bar canvas + text fields) ──
+    var cockpitDiv = document.createElement('div');
+    cockpitDiv.id = 'cockpit-overlay';
+    var cockpitImg = document.createElement('img');
+    cockpitImg.id = 'cockpit-img';
+    cockpitImg.src = 'images/cockpit.png';
+    cockpitDiv.appendChild(cockpitImg);
+    // Wheel images (behind the cockpit frame)
+    var wheelSides = ['left', 'right'];
+    for (var wi = 0; wi < wheelSides.length; wi++) {
+      for (var wf = 0; wf < 3; wf++) {
+        var wImg = document.createElement('img');
+        wImg.className = 'cockpit-wheel';
+        wImg.dataset.side = wheelSides[wi];
+        wImg.dataset.frame = wf;
+        wImg.src = 'images/' + wheelSides[wi] + '-wheel-' + wf + '.png';
+        cockpitDiv.appendChild(wImg);
+      }
+    }
+    // Boost flame overlay images (cycle while boosting)
+    for (var bi = 1; bi <= 3; bi++) {
+      var bImg = document.createElement('img');
+      bImg.className = 'cockpit-boost-img';
+      bImg.src = 'images/boost-' + bi + '.png';
+      bImg.style.display = 'none';
+      cockpitDiv.appendChild(bImg);
+    }
+    var cockpitCvs = document.createElement('canvas');
+    cockpitCvs.id = 'cockpit-canvas';
+    cockpitDiv.appendChild(cockpitCvs);
+    ['cockpit-lap-boost', 'cockpit-distance', 'cockpit-laptime', 'cockpit-bestlap'].forEach(function (tid) {
+      var t = document.createElement('div');
+      t.id = tid;
+      t.className = 'cockpit-text';
+      cockpitDiv.appendChild(t);
+    });
+    document.body.appendChild(cockpitDiv);
+
     // ── Season overlay (styled via #season-overlay / #season-card in game.css) ──
     var overlay = document.createElement('div');
     overlay.id = 'season-overlay';
@@ -438,11 +511,14 @@
     overlay.appendChild(card);
     document.body.appendChild(overlay);
 
-    // ── Chain overlay canvas (drawn over the 3D view during crane lifting) ──
-    var chainCanvas = document.createElement('canvas');
-    chainCanvas.id = 'chain-canvas';
-    chainCanvas.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:99;display:none;';
-    document.body.appendChild(chainCanvas);
+    // ── Chain overlay image (shown during crane lifting) ──
+    var chainClip = document.createElement('div');
+    chainClip.id = 'chain-clip';
+    var chainImg = document.createElement('img');
+    chainImg.id = 'chain-img';
+    chainImg.src = 'images/chains.png';
+    chainClip.appendChild(chainImg);
+    document.body.appendChild(chainClip);
 
     wireButtons();
     wireKeyboard();
@@ -741,7 +817,6 @@
     var oBest = getOpponentBestLap();
     var opponent = (race.driverA === HUMAN_PLAYER) ? race.driverB : race.driverA;
 
-    // Read back holes — smashes during the race decrement this
     damageHolePosition = getDamageHolePosition();
 
     if (wrecked) {
@@ -763,10 +838,7 @@
     season.points[race.bestLapDriver].bestLaps++;
     saveProgress();
 
-    fadeAndDo(function () {
-      goToMenu();
-      showRaceResult(race);
-    });
+    leaveRace(function () { showRaceResult(race); });
   }
 
   function pauseSeason() {
@@ -1064,15 +1136,11 @@
   }
 
   function finishMpRace() {
-    // 'finished' message was already sent during race-end detection
+    // Capture C++ state before leaveRace resets it
     var wrecked = isPlayerWrecked();
-    // Determine result: won if we finished first and weren't wrecked,
-    // OR if opponent was wrecked and we weren't
-    var won = false;
-    if (!wrecked) {
-      won = mpPlayerFinishedFirst || mpOpponentWrecked;
-    }
-    uiMode = UI_MP_RESULT;
+    var won = !wrecked && (mpPlayerFinishedFirst || mpOpponentWrecked);
+    var pBest = getPlayerBestLap();
+
     var h = '<div class="overlay-title">Race Complete</div>';
     if (wrecked && mpOpponentWrecked) {
       h += '<div class="overlay-result-large color-orange">BOTH WRECKED</div>';
@@ -1083,36 +1151,37 @@
     } else {
       h += '<div class="overlay-result-large color-orange">YOU LOSE</div>';
     }
-    var pBest = getPlayerBestLap();
     if (pBest > 0) {
       h += '<div class="overlay-info">Your best lap: ' + fmtLap(pBest) + '</div>';
     }
     h += '<div id="mp-btn-again" class="overlay-button">Play Again</div>';
     h += '<div id="mp-btn-quit" class="overlay-button overlay-button-secondary">Quit</div>';
-    showOverlay(h);
-    overlayBtn('mp-btn-again', 'AGAIN', function () {
-      hideOverlay();
-      mpOpponentFinished = false;
-      mpOpponentWrecked = false;
-      mpPlayerFinishedFirst = false;
-      mpPlayerNotified = false;
-      goToMenu();  // reset C++ state fully between races
-      if (SCR_Multiplayer.isHost()) {
-        showMpHostTrack();
-      } else {
-        // Show waiting screen
-        uiMode = UI_MP_JOIN_LOBBY;
-        var h2 = '<div class="overlay-title">Waiting</div>';
-        h2 += '<div class="overlay-description">Waiting for host to select next track\u2026</div>';
-        showOverlay(h2);
-      }
-    });
-    overlayBtn('mp-btn-quit', 'QUIT', function () {
-      mpCleanup();
-      hideOverlay();
-      goToMenu();
-      uiMode = UI_MAIN_MENU;
-      showUIForMode();
+
+    leaveRace(function () {
+      uiMode = UI_MP_RESULT;
+      showOverlay(h);
+      overlayBtn('mp-btn-again', 'AGAIN', function () {
+        hideOverlay();
+        mpOpponentFinished = false;
+        mpOpponentWrecked = false;
+        mpPlayerFinishedFirst = false;
+        mpPlayerNotified = false;
+        goToMenu();
+        if (SCR_Multiplayer.isHost()) {
+          showMpHostTrack();
+        } else {
+          uiMode = UI_MP_JOIN_LOBBY;
+          var h2 = '<div class="overlay-title">Waiting</div>';
+          h2 += '<div class="overlay-description">Waiting for host to select next track\u2026</div>';
+          showOverlay(h2);
+        }
+      });
+      overlayBtn('mp-btn-quit', 'QUIT', function () {
+        mpCleanup();
+        goToMenu();
+        uiMode = UI_MAIN_MENU;
+        showUIForMode();
+      });
     });
   }
 
@@ -1239,36 +1308,27 @@
   // ══════════════════════════════════════════════════════════════
 
   function handleMenuDuringRace() {
-    fadeAndDo(function () {
-      if (uiMode === UI_MP_RACE) {
-        setGameOver();
-        // Notify opponent we're quitting
-        if (SCR_Multiplayer.isConnected()) {
-          try { SCR_Multiplayer.sendReliable({ type: 'quit' }); } catch(e) {}
-        }
-        mpCleanup();
-        goToMenu();
-        uiMode = UI_MAIN_MENU;
-        showUIForMode();
-      } else if (uiMode === UI_SEASON_RACE) {
-        // Read back holes before recording the loss
-        damageHolePosition = getDamageHolePosition();
-        var race = season.schedule[season.currentRace];
-        var opp = (race.driverA === HUMAN_PLAYER) ? race.driverB : race.driverA;
-        race.winnerDriver = opp;
-        race.bestLapDriver = opp;
-        race.played = true;
-        season.points[opp].wins++;
-        season.points[opp].bestLaps++;
-        saveProgress();
-        goToMenu();
-        showRaceResult(race);
-      } else {
-        goToMenu();
-        uiMode = UI_MAIN_MENU;
-        showUIForMode();
+    if (uiMode === UI_MP_RACE) {
+      if (SCR_Multiplayer.isConnected()) {
+        try { SCR_Multiplayer.sendReliable({ type: 'quit' }); } catch(e) {}
       }
-    });
+      mpCleanup();
+      leaveRace(function () { uiMode = UI_MAIN_MENU; showUIForMode(); });
+    } else if (uiMode === UI_SEASON_RACE) {
+      // Record as a loss before leaveRace resets C++ state
+      damageHolePosition = getDamageHolePosition();
+      var race = season.schedule[season.currentRace];
+      var opp = (race.driverA === HUMAN_PLAYER) ? race.driverB : race.driverA;
+      race.winnerDriver = opp;
+      race.bestLapDriver = opp;
+      race.played = true;
+      season.points[opp].wins++;
+      season.points[opp].bestLaps++;
+      saveProgress();
+      leaveRace(function () { showRaceResult(race); });
+    } else {
+      leaveRace(function () { uiMode = UI_MAIN_MENU; showUIForMode(); });
+    }
   }
 
   function addBtn(id, cb) {
@@ -1299,13 +1359,50 @@
     }, { passive: false });
   }
 
+  function addSplitDriveBtn(id, fieldLeft, fieldRight) {
+    var btn = document.getElementById(id);
+    function getField(touch) {
+      var rect = btn.getBoundingClientRect();
+      var x = touch.clientX - rect.left;
+      return (x < rect.width / 2) ? fieldLeft : fieldRight;
+    }
+    btn.addEventListener('touchstart', function (e) {
+      e.preventDefault(); btn.style.background = 'rgba(255,255,255,0.45)';
+      for (var i = 0; i < e.changedTouches.length; i++) {
+        var t = e.changedTouches[i];
+        var f = getField(t);
+        activeDriveTouches[t.identifier] = f;
+        touchDrive[f] = true;
+      }
+      updateDriveFlags();
+    }, { passive: false });
+    btn.addEventListener('touchend', function (e) {
+      e.preventDefault();
+      for (var i = 0; i < e.changedTouches.length; i++) {
+        var f = activeDriveTouches[e.changedTouches[i].identifier];
+        if (f) { touchDrive[f] = false; delete activeDriveTouches[e.changedTouches[i].identifier]; }
+      }
+      if (!touchDrive[fieldLeft] && !touchDrive[fieldRight]) btn.style.background = 'rgba(255,255,255,0.18)';
+      updateDriveFlags();
+    }, { passive: false });
+    btn.addEventListener('touchcancel', function (e) {
+      e.preventDefault();
+      for (var i = 0; i < e.changedTouches.length; i++) {
+        var f = activeDriveTouches[e.changedTouches[i].identifier];
+        if (f) { touchDrive[f] = false; delete activeDriveTouches[e.changedTouches[i].identifier]; }
+      }
+      if (!touchDrive[fieldLeft] && !touchDrive[fieldRight]) btn.style.background = 'rgba(255,255,255,0.18)';
+      updateDriveFlags();
+    }, { passive: false });
+  }
+
   function updateDriveFlags() {
     var d = touchDrive, f = 0;
     if (d.left)  f |= KEY_LEFT;
     if (d.right) f |= KEY_RIGHT;
-    if (d.gas && d.boost)   f |= KEY_ACCEL_BOOST;
+    if (d.gasBoost)         f |= KEY_ACCEL_BOOST;
     else if (d.gas)         f |= KEY_ACCEL_ONLY;
-    if (d.brake && d.boost) f |= KEY_BRAKE_BOOST;
+    if (d.brakeBoost)       f |= KEY_BRAKE_BOOST;
     else if (d.brake)       f |= KEY_HASH;
     setDriveInput(f);
   }
@@ -1344,17 +1441,13 @@
     // In-Game drive
     addDriveBtn('tc-left', 'left');
     addDriveBtn('tc-right', 'right');
-    addDriveBtn('tc-accel', 'gas');
-    addDriveBtn('tc-brake', 'brake');
-    addDriveBtn('tc-boost', 'boost');
+    addSplitDriveBtn('tc-accel', 'gasBoost', 'gas');
+    addSplitDriveBtn('tc-brake', 'brakeBoost', 'brake');
 
     // Close / menu
     addBtn('tc-menu', handleMenuDuringRace);
 
-    // Game Over (practise)
-    addBtn('tc-gameover', function () {
-      fadeAndDo(function () { goToMenu(); uiMode = UI_PRACTISE_MENU; showUIForMode(); });
-    });
+
   }
 
   function wireKeyboard() {
@@ -1489,6 +1582,12 @@
       var e = document.getElementById(ALL_ELS[i]);
       if (e) e.style.display = 'none';
     }
+    var co = document.getElementById('cockpit-overlay');
+    if (co) co.style.display = 'none';
+    var cvs = document.getElementById('canvas');
+    if (cvs) cvs.classList.remove('race-mode');
+    delete window.gameCanvasWidth;
+    delete window.gameCanvasHeight;
     hideOverlay();
   }
 
@@ -1511,11 +1610,13 @@
       case UI_PRACTISE_RACE:
       case UI_SEASON_RACE:
       case UI_MP_RACE:
-        showEls(['tc-menu', 'tc-hud-damage', 'tc-hud-box']);
-        if (isMobile) showEls(['tc-left', 'tc-right', 'tc-accel', 'tc-brake', 'tc-boost']);
+        showEls(['tc-menu']);
+        var co = document.getElementById('cockpit-overlay');
+        if (co) co.style.display = 'block';
+        var cvs = document.getElementById('canvas');
+        if (cvs) cvs.classList.add('race-mode');
+        if (isMobile) showEls(['tc-left', 'tc-right', 'tc-accel', 'tc-brake']);
         break;
-      case UI_PRACTISE_RESULT:
-        showEls(['tc-gameover-label', 'tc-gameover']); break;
       // Season overlays managed by showOverlay()
     }
   }
@@ -1524,106 +1625,189 @@
   //  CHAIN / CRANE OVERLAY
   // ══════════════════════════════════════════════════════════════
 
-  // Scroll offset for the chain links when the car has been released.
+  // Scroll offset for the chain image when the car has been released.
   var chainScrollOffset = 0;
   var chainReleasing = false;
 
   function updateChainCanvas() {
-    var canvas = document.getElementById('chain-canvas');
-    if (!canvas) return;
+    var clip = document.getElementById('chain-clip');
+    if (!clip) return;
 
     var inRace = (uiMode === UI_PRACTISE_RACE || uiMode === UI_SEASON_RACE || uiMode === UI_MP_RACE);
     var onChains = inRace && isCarOnChains();
 
     // Once car leaves chains, animate chains scrolling off upward
     if (!onChains && chainReleasing) {
-      chainScrollOffset -= 24;
-      if (chainScrollOffset <= -canvas.height) {
+      chainScrollOffset -= 4;
+      if (chainScrollOffset <= -100) {
         chainReleasing = false;
         chainScrollOffset = 0;
-        canvas.style.display = 'none';
+        clip.style.display = 'none';
         return;
       }
     } else if (onChains) {
       chainReleasing = true;
       chainScrollOffset = 0;
     } else {
-      canvas.style.display = 'none';
+      clip.style.display = 'none';
       return;
     }
 
-    // Size canvas to window
-    var w = window.innerWidth;
-    var h = window.innerHeight;
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w;
-      canvas.height = h;
-    }
-    canvas.style.display = 'block';
+    clip.style.display = 'block';
+    var img = document.getElementById('chain-img');
+    img.style.top = chainScrollOffset + '%';
+  }
 
-    var ctx = canvas.getContext('2d');
+  // ══════════════════════════════════════════════════════════════
+  //  COCKPIT SPEED BAR
+  // ══════════════════════════════════════════════════════════════
+
+  function updateCockpitSpeedBar() {
+    var cvs = document.getElementById('cockpit-canvas');
+    if (!cvs) return;
+    var overlay = document.getElementById('cockpit-overlay');
+    if (!overlay) return;
+    var w = overlay.offsetWidth;
+    var h = overlay.offsetHeight;
+    if (cvs.width !== w || cvs.height !== h) {
+      cvs.width = w;
+      cvs.height = h;
+    }
+    var ctx = cvs.getContext('2d');
     ctx.clearRect(0, 0, w, h);
 
-    // Chains always hang from top of screen to bottom, regardless of phase.
-    // When the car is released the chains scroll upward and disappear.
-    var scrollY = chainScrollOffset;
-    var chainBottom = h * 1.05;  // slightly past bottom edge so last link isn't clipped
+    var scaleX = w / 320;
+    var scaleY = h / 200;
 
-    // Chain X positions: ~25% from left edge and ~25% from right edge
-    var leftChainX  = w * 0.25;
-    var rightChainX = w * 0.75;
+    // ── Damage bar: (41,3) to (279,3), 1px high ──
+    var dmgFrac = Math.min(1, getDamage() / 240);
+    if (dmgFrac > 0) {
+      var dmgX = 41 * scaleX;
+      var dmgY = 3 * scaleY;
+      var dmgW = 238 * dmgFrac * scaleX;
+      var dmgH = Math.max(1, 1 * scaleY);
+      ctx.fillStyle = '#ff3333';
+      ctx.fillRect(dmgX, dmgY, dmgW, dmgH);
+    }
 
-    drawChain(ctx, leftChainX,  scrollY, chainBottom + scrollY, w);
-    drawChain(ctx, rightChainX, scrollY, chainBottom + scrollY, w);
+    // ── Holes: 10 slots across the damage bar ──
+    var holePos = getDamageHolePosition();
+    var numHoles = 10 - holePos;
+    if (numHoles > 0) {
+      var slotW = 238 / 10 * scaleX;
+      var holeH = Math.max(1, 1 * scaleY);
+      ctx.fillStyle = 'rgba(0,0,0,0.75)';
+      for (var hi = 0; hi < numHoles; hi++) {
+        // Holes appear from right to left
+        var hx = (41 + (9 - hi) * 238 / 10) * scaleX;
+        ctx.fillRect(hx, 3 * scaleY, slotW, holeH);
+      }
+    }
 
-    // "Press boost to drop" hint during recovery hover phase
-    if (isCarOnChains() && isChainBoostHintVisible()) {
-      var hintText = isMobile ? 'Tap \uD83D\uDD25 to drop' : 'Press boost to drop';
-      var fontSize = Math.round(Math.min(w, h) * 0.045);
-      ctx.font = 'bold ' + fontSize + 'px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      // Subtle pulsing alpha so the text catches attention
-      var pulse = 0.65 + 0.35 * Math.sin(Date.now() / 300);
-      ctx.fillStyle = 'rgba(255, 220, 80, ' + pulse + ')';
-      ctx.fillText(hintText, w / 2, h * 0.80);
+    // ── Speed bar ──
+    var speed = getDisplaySpeed();
+    // Compute right edge of speed bar in native 320×200 coordinate space.
+    // x=105 → speed 50, x=123 → speed 80 → slope = 0.6 px/unit
+    var xRightNative = 105 + (speed - 50) * 0.6;
+    if (xRightNative > 97) {
+      if (xRightNative > 220) xRightNative = 220;
+      var xLeft   = 97 * scaleX;
+      var xRight  = xRightNative * scaleX;
+      var yTop    = 174 * scaleY;
+      var yHeight = Math.max(1, 2 * scaleY);
+      ctx.fillStyle = '#ffff00';
+      ctx.fillRect(xLeft, yTop, xRight - xLeft, yHeight);
     }
   }
 
-  function drawChain(ctx, cx, topY, bottomY, screenW) {
-    // Draw a chain as alternating O (ellipse) and | (narrow ellipse) links.
-    // Each link is drawn as an ellipse.
-    var linkH = 24;    // height of each link (px)
-    var linkW = 36;    // wide radius for O links
-    var linkThin = 6;  // narrow radius for | links
-    var lineW = 4;     // stroke width
+  // ══════════════════════════════════════════════════════════════
+  //  WHEEL OVERLAYS
+  // ══════════════════════════════════════════════════════════════
 
-    ctx.lineWidth = lineW;
+  // Convert a wheel height-difference value (from C++) to a screen Y
+  // offset in the 320×200 coordinate space, replicating the Amiga's
+  // update.wheel.positions formula using a sine approximation.
+  function wheelDiffToY(diff) {
+    // diff from C++: road_height − wheel_height
+    //   positive → suspension compressed (bump, road pushes wheel up)
+    //   negative → airborne (wheel should stay at rest, not anticipate)
+    //
+    // Ignore negative diffs: when airborne the wheels sit at their base
+    // position. Only positive diffs (actual track contact) move them up.
+    if (diff < 0) diff = 0;
+    if (diff > 0x1400) diff = 0x1400;
 
-    var y = topY;
-    var isO = true;  // alternate between O and | links
+    // Base Y = 149 (30px lower than original 119). Max bump moves up 40px.
+    var offset = (diff / 0x1400) * 40;
+    return Math.round(126 - offset);
+  }
 
-    while (y < bottomY) {
-      var cy = y + linkH / 2;
-      var rx, ry;
-      if (isO) {
-        rx = linkW / 2;
-        ry = linkH / 2;
+  function updateWheels() {
+    var wheels = document.querySelectorAll('.cockpit-wheel');
+    if (!wheels.length) return;
+
+    var zSpeed = getPlayerZSpeed();
+    var absSpeed = Math.abs(zSpeed);
+
+    // ── Update wheel rotation speed (matches set.wheel.rotation.speed) ──
+    if (isTouchingRoad()) {
+      if (absSpeed < 0x800) {
+        wheelRotationSpeed = absSpeed * 8;
       } else {
-        rx = linkThin / 2;
-        ry = linkH / 2;
+        wheelRotationSpeed = absSpeed * 2 + 0x3000;
+        if (wheelRotationSpeed > 0xFF00) wheelRotationSpeed = 0xFF00;
       }
+    } else {
+      // Amiga decays by 25% per game frame (~25fps); at browser ~60fps use
+      // ~12% (>> 3) so the visual fade-out speed roughly matches.
+      wheelRotationSpeed -= (wheelRotationSpeed >> 3);
+      if (wheelRotationSpeed < 1) wheelRotationSpeed = 0;
+    }
 
-      // Only draw links that are partially visible
-      if (cy + ry >= 0 && cy - ry <= screenW * 2) {
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-        ctx.strokeStyle = '#c0a860';
-        ctx.stroke();
+    // ── Advance rotation frame (matches update.wheel.rotation) ──
+    wheelRotationAccum += wheelRotationSpeed;
+    if (wheelRotationAccum >= 0x10000) {
+      wheelRotationAccum -= 0x10000;
+      if (zSpeed >= 0) {
+        wheelFrameNumber = (wheelFrameNumber + 1) % 3;
+      } else {
+        wheelFrameNumber = (wheelFrameNumber + 2) % 3;  // decrement with wrap
       }
+    }
 
-      y += linkH;
-      isO = !isO;
+    // ── Compute Y positions from suspension differences ──
+    var diffFL = getWheelDiffFL();
+    var diffFR = getWheelDiffFR();
+    var leftY = wheelDiffToY(diffFL);
+    var rightY = wheelDiffToY(diffFR);
+
+    // Left wheel: right frame = 5 - frameNumber (Amiga convention)
+    var leftFrame = (5 - wheelFrameNumber) % 3;
+    var rightFrame = wheelFrameNumber;
+
+    // ── Position and show/hide wheel images ──
+    for (var i = 0; i < wheels.length; i++) {
+      var w = wheels[i];
+      var side = w.dataset.side;
+      var frame = parseInt(w.dataset.frame, 10);
+
+      if (side === 'left') {
+        if (frame === leftFrame) {
+          w.style.display = 'block';
+          w.style.left = 'calc(32 / 320 * 100%)';
+          w.style.top = 'calc(' + leftY + ' / 200 * 100%)';
+        } else {
+          w.style.display = 'none';
+        }
+      } else {
+        if (frame === rightFrame) {
+          w.style.display = 'block';
+          w.style.left = 'calc(256 / 320 * 100%)';
+          w.style.top = 'calc(' + rightY + ' / 200 * 100%)';
+        } else {
+          w.style.display = 'none';
+        }
+      }
     }
   }
 
@@ -1686,17 +1870,11 @@
       if (canExit && Date.now() - raceEndTime > 6000) {
         raceEndTime = 0;
         if (uiMode === UI_MP_RACE) {
-          setGameOver();
           finishMpRace();
         } else if (uiMode === UI_SEASON_RACE) {
-          setGameOver();
           finishSeasonRace();
         } else {
-          setGameOver();
-          uiMode = UI_PRACTISE_RESULT;
-          var rl = document.getElementById('tc-gameover-label');
-          if (rl) { rl.textContent = isPlayerWrecked() ? 'WRECKED' : 'RACE COMPLETE'; rl.style.opacity = '1'; }
-          showUIForMode();
+          leaveRace(function () { uiMode = UI_PRACTISE_MENU; showUIForMode(); });
         }
       }
     }
@@ -1704,38 +1882,31 @@
     // ── Chain / crane overlay ──
     updateChainCanvas();
 
-    // HUD updates
-    if (uiMode === UI_PRACTISE_RACE || uiMode === UI_SEASON_RACE || uiMode === UI_MP_RACE || uiMode === UI_PRACTISE_RESULT) {
-      // Damage bar (top)
-      var df = document.getElementById('tc-hud-damage-fill');
-      if (df) df.style.width = Math.min(100, Math.round(100 * getDamage() / 240)) + '%';
-      var dh = document.getElementById('tc-hud-damage-holes');
-      if (dh) {
-        var holePos = getDamageHolePosition();
-        var numHoles = 10 - holePos; // how many holes are punched
-        var slots = dh.children;
-        for (var hi = 0; hi < slots.length; hi++) {
-          slots[hi].style.display = (hi < numHoles) ? 'flex' : 'none';
-        }
+    // Cockpit overlay HUD (shown during active races only)
+    if (uiMode === UI_PRACTISE_RACE || uiMode === UI_SEASON_RACE || uiMode === UI_MP_RACE) {
+      // Keep canvas at 8:5 aspect ratio
+      var vw = window.innerWidth, vh = window.innerHeight;
+      if (vw / vh > 8 / 5) {
+        window.gameCanvasWidth = Math.round(vh * 8 / 5);
+        window.gameCanvasHeight = vh;
+      } else {
+        window.gameCanvasWidth = vw;
+        window.gameCanvasHeight = Math.round(vw * 5 / 8);
+      }
+      var lap = getLapNumber();
+
+      // Lap / boost
+      var lapBoostEl = document.getElementById('cockpit-lap-boost');
+      if (lapBoostEl) {
+        var lapStr = lap >= 1 ? 'L' + Math.min(lap, 3) : 'L\u00A0';
+        var boostStr = 'B' + String(getBoostReserve()).padStart(2, '\u00A0');
+        lapBoostEl.textContent = lapStr + '\u00A0' + boostStr;
       }
 
-      // Vertical speed bar
-      var sf = document.getElementById('hud-speed-fill');
-      if (sf) sf.style.height = Math.min(100, Math.round(100 * getDisplaySpeed() / 240)) + '%';
-
-      // Lap row
-      var lap = getLapNumber();
-      var lapEl = document.getElementById('hud-lap');
-      if (lapEl) lapEl.textContent = lap >= 1 ? ('Lap ' + Math.min(lap, 3) + '/3') : 'Lap -/3';
-
-      // Boost row
-      var bEl = document.getElementById('hud-boost');
-      if (bEl) bEl.textContent = 'Boost ' + getBoostReserve();
-
       // Distance to opponent
-      var distEl = document.getElementById('hud-distance');
+      var distEl = document.getElementById('cockpit-distance');
       if (distEl) {
-        if (uiMode === UI_PRACTISE_RACE || uiMode === UI_PRACTISE_RESULT) {
+        if (uiMode === UI_PRACTISE_RACE) {
           distEl.textContent = '\u00A0';
         } else {
           var rawDist = getDistanceToOpponent();
@@ -1747,18 +1918,41 @@
       }
 
       // Current lap time
-      var ltEl = document.getElementById('hud-laptime');
+      var ltEl = document.getElementById('cockpit-laptime');
       if (ltEl) {
         var curMs = getCurrentLapTime();
         ltEl.textContent = (lap >= 1 && curMs > 0) ? fmtLap(curMs) : '\u00A0';
       }
 
       // Best lap time
-      var blEl = document.getElementById('hud-bestlap');
+      var blEl = document.getElementById('cockpit-bestlap');
       if (blEl) {
         var bestMs = getPlayerBestLap();
-        blEl.textContent = bestMs > 0 ? (fmtLap(bestMs) + ' \u2605') : '\u00A0';
+        blEl.textContent = bestMs > 0 ? fmtLap(bestMs) : '\u00A0';
       }
+
+      // Speed bar on cockpit canvas
+      updateCockpitSpeedBar();
+
+      // Boost flame overlay
+      var boostImgs = document.querySelectorAll('.cockpit-boost-img');
+      if (isBoostActive()) {
+        var now = performance.now();
+        if (now - boostFrameTime >= 100) {
+          boostFrameTime = now;
+          boostFrameIndex = (boostFrameIndex + 1) % 3;
+        }
+        for (var bi = 0; bi < boostImgs.length; bi++) {
+          boostImgs[bi].style.display = (bi === boostFrameIndex) ? 'block' : 'none';
+        }
+      } else {
+        for (var bi = 0; bi < boostImgs.length; bi++) {
+          boostImgs[bi].style.display = 'none';
+        }
+      }
+
+      // Wheel overlays
+      updateWheels();
     }
 
     // ── Multiplayer per-frame state exchange ──

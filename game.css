@@ -181,26 +181,35 @@
   font-size: min(5vw, 28px);
 }
 
+#tc-accel, #tc-brake {
+  display: none;
+  flex-direction: row;
+}
+
+#tc-accel .split-left, #tc-accel .split-right,
+#tc-brake .split-left, #tc-brake .split-right {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#tc-accel .split-left, #tc-brake .split-left {
+  border-right: 1px solid rgba(255, 255, 255, 0.3);
+}
+
 #tc-accel {
   right: 2vw; bottom: 30vh;
-  width: 11vw; height: 11vw;
-  max-width: 65px; max-height: 65px;
-  font-size: min(5vw, 28px);
+  width: 18vw; height: 11vw;
+  max-width: 100px; max-height: 65px;
+  font-size: min(4vw, 22px);
 }
 
 #tc-brake {
   right: 2vw; bottom: 6vh;
-  width: 11vw; height: 11vw;
-  max-width: 65px; max-height: 65px;
-  font-size: min(5vw, 28px);
-}
-
-#tc-boost {
-  left: 50%; bottom: 6vh;
-  width: 22vw; height: 11vw;
-  max-width: 120px; max-height: 65px;
-  font-size: min(5vw, 28px);
-  transform: translateX(-50%);
+  width: 18vw; height: 11vw;
+  max-width: 100px; max-height: 65px;
+  font-size: min(4vw, 22px);
 }
 
 /* ── In-game common ──────────────────────────────────────── */
@@ -338,6 +347,132 @@
 }
 .hud-box-mobile .hud-row {
   font-size: 12px;
+}
+
+/* ── Race-mode canvas: 8∶5 aspect ratio ─────────────────── */
+
+#canvas.race-mode {
+  position: fixed !important;
+  width: min(100vw, calc(100vh * 8 / 5)) !important;
+  height: min(100vh, calc(100vw * 5 / 8)) !important;
+  width: min(100dvw, calc(100dvh * 8 / 5)) !important;
+  height: min(100dvh, calc(100dvw * 5 / 8)) !important;
+  left: 50% !important;
+  top: 50% !important;
+  transform: translate(-50%, -50%) !important;
+}
+
+/* ── Chain overlay ─────────────────────────────────────────── */
+
+#chain-clip {
+  position: fixed;
+  left: 50%; top: 50%;
+  width: min(100vw, calc(100vh * 8 / 5));
+  height: min(100vh, calc(100vw * 5 / 8));
+  width: min(100dvw, calc(100dvh * 8 / 5));
+  height: min(100dvh, calc(100dvw * 5 / 8));
+  transform: translate(-50%, -50%);
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 40;
+  display: none;
+}
+
+#chain-img {
+  position: absolute;
+  left: 0; top: 0;
+  width: 100%; height: 100%;
+  image-rendering: pixelated;
+}
+
+/* ── Cockpit overlay ──────────────────────────────────────── */
+
+#cockpit-overlay {
+  position: fixed;
+  left: 50%; top: 50%;
+  width: min(100vw, calc(100vh * 8 / 5));
+  height: min(100vh, calc(100vw * 5 / 8));
+  width: min(100dvw, calc(100dvh * 8 / 5));
+  height: min(100dvh, calc(100dvw * 5 / 8));
+  transform: translate(-50%, -50%);
+  container-type: size;
+  pointer-events: none;
+  z-index: 50;
+  display: none;
+}
+
+#cockpit-img {
+  position: absolute;
+  left: 0; top: 0;
+  width: 100%; height: 100%;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  z-index: 1;
+}
+
+#cockpit-canvas {
+  position: absolute;
+  left: 0; top: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.cockpit-boost-img {
+  position: absolute;
+  left: 0; top: 0;
+  width: 100%; height: 100%;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.cockpit-wheel {
+  position: absolute;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  pointer-events: none;
+  width: calc(32 / 320 * 100%);
+  height: calc(58 / 200 * 100%);
+  display: none;
+}
+
+/* cockpit.png is 320×200, so all offsets are fractions of those dimensions */
+.cockpit-text {
+  position: absolute;
+  font-family: 'Courier New', Courier, monospace;
+  color: #000;
+  font-size: 3.25cqh;
+  font-stretch: expanded;
+  line-height: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  width: calc(48 / 320 * 100%);
+  height: 3.25cqh;
+  pointer-events: none;
+  text-align: center;
+  z-index: 2;
+}
+
+#cockpit-lap-boost {
+  left: calc(38 / 320 * 100%);
+  top: calc(179 / 200 * 100%);
+}
+
+#cockpit-distance {
+  left: calc(38 / 320 * 100%);
+  top: calc(189 / 200 * 100%);
+}
+
+#cockpit-laptime {
+  left: calc(236 / 320 * 100%);
+  top: calc(179 / 200 * 100%);
+}
+
+#cockpit-bestlap {
+  left: calc(236 / 320 * 100%);
+  top: calc(189 / 200 * 100%);
 }
 
 /* ── Credits ── */
