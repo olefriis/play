@@ -114,6 +114,10 @@
   var superLeague = false;
   var damageHolePosition = 10;  // 10 = fully intact, 0 = all holes
 
+  // ── Damage hole/smash overlay state ─────────────────────────
+  var prevDamageHolePosition = 10; // track changes to detect new smashes
+  var smashTimers = [];            // array of 10 timeout IDs (null = no active smash)
+
   // ── Boost flame overlay state ──────────────────────────────
   var boostFrameIndex = 0;
   var boostFrameTime = 0;
@@ -122,6 +126,27 @@
   var wheelFrameNumber = 0;       // current rotation frame 0-2
   var wheelRotationAccum = 0;     // 16-bit accumulator; overflows trigger frame advance
   var wheelRotationSpeed = 0;     // 16-bit speed added each game frame
+
+  // ── Dust cloud particle state ──────────────────────────────
+  var DUST_COUNT = 16;
+  var DUST_FRAME_SEQ = [3,6,7,2,1,5,0,4,0,5,1,2,7,6,2,7];
+  var DUST_X_OFFSET  = [32,32,32,40,24,32,32,32]; // half-width centering per frame
+  var DUST_W = [64,64,64,80,48,64,64,64]; // pixel width per frame
+  var DUST_H = [34,31,38,36,28,34,34,36]; // pixel height per frame
+  var dustParticles = [];   // {x, y, xVel, yVel}
+  var dustFrameCounter = 0;
+  var dustActive = false;   // was dust showing last frame?
+  var dustLastTick = 0;     // timestamp of last particle update
+
+  // ── Spark particle state ───────────────────────────────────
+  var SPARK_COUNT = 24;
+  var sparkParticles = [];  // {x, y, yVel, xVel, color}
+  var sparkLastTick = 0;
+
+  // ── Damage bar wavy path state (matches Amiga random walk) ─
+  var damagePath = [];      // Y offsets (0-7) per damage pixel (0-239)
+  var damageShade = [];     // true = going down (lighter shade)
+  var damagePathY = 4;      // current random-walk Y position
 
   var currentDivisionAssignments = INITIAL_DIVISIONS.slice();
   var seasonStartDivisionAssignments = null; // division assignments snapshot at season start
@@ -302,11 +327,13 @@
   function getPlayerWheelFL()        { return Module._jsGetPlayerWheelFL(); }
   function getPlayerWheelFR()        { return Module._jsGetPlayerWheelFR(); }
   function getPlayerWheelR()         { return Module._jsGetPlayerWheelR(); }
+  function isPlayerWinning()    { return !!Module._jsIsPlayerWinning(); }
   function isCarOnChains()              { return !!Module._jsIsCarOnChains(); }
   function getChainCountdown()          { return Module._jsGetChainCountdown(); }
   function getChainFromLeft()           { return !!Module._jsGetChainSwingFromLeft(); }
   function isChainBoostHintVisible()    { return !!Module._jsIsChainBoostHintVisible(); }
   function isTouchingRoad()             { return !!Module._jsIsTouchingRoad(); }
+  function getSparkFerocity()            { return Module._jsGetSparkFerocity(); }
   function getWheelDiffFL()             { return Module._jsGetWheelDiffFL(); }
   function getWheelDiffFR()             { return Module._jsGetWheelDiffFR(); }
   function setOpponentState(rs, dist, xPos, zSpd, wFL, wFR, wR) {
@@ -438,29 +465,13 @@
     element('tc-gameover-label', '');
     element('tc-gameover', 'Menu');
 
+    // ── Chain boost hint (shares game-button base) ──
+    var boostHintEl = element('chain-boost-hint', isMobile ? 'Tap \uD83D\uDD25 to drop' : 'Press boost to drop');
+
     // ── HUD: damage bar at top ──
     createHudBar('tc-hud-damage', '\u26A0\uFE0F');
 
-    // Add holes overlay to the damage bar (individual hole markers on the right)
-    (function () {
-      var track = document.querySelector('#tc-hud-damage .hud-track');
-      if (track) {
-        track.style.position = 'relative';
-        var container = document.createElement('div');
-        container.id = 'tc-hud-damage-holes';
-        container.style.cssText = 'position:absolute;right:0;top:0;height:100%;pointer-events:none;display:flex;flex-direction:row-reverse;';
-        container.style.width = '100%';
-        // Create 10 hole marker slots (right-to-left)
-        for (var i = 0; i < 10; i++) {
-          var slot = document.createElement('div');
-          slot.className = 'damage-hole-slot';
-          slot.style.cssText = 'width:10%;height:100%;box-sizing:border-box;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.65);border-left:1px solid rgba(255,60,60,0.4);';
-          slot.innerHTML = '<span style="color:rgba(255,80,80,0.85);font-size:min(2vh,12px);font-weight:bold;line-height:1;text-shadow:0 0 3px rgba(0,0,0,0.8);">✕</span>';
-          container.appendChild(slot);
-        }
-        track.appendChild(container);
-      }
-    })();
+
 
     // ── HUD: info box (left side) ──
     createHudBox();
@@ -480,7 +491,7 @@
         wImg.className = 'cockpit-wheel';
         wImg.dataset.side = wheelSides[wi];
         wImg.dataset.frame = wf;
-        wImg.src = 'images/' + wheelSides[wi] + '-wheel-' + wf + '.png';
+        wImg.src = 'images/wheels/' + wheelSides[wi] + '-wheel-' + wf + '.png';
         cockpitDiv.appendChild(wImg);
       }
     }
@@ -488,10 +499,55 @@
     for (var bi = 1; bi <= 3; bi++) {
       var bImg = document.createElement('img');
       bImg.className = 'cockpit-boost-img';
-      bImg.src = 'images/boost-' + bi + '.png';
+      bImg.src = 'images/boost/boost-' + bi + '.png';
       bImg.style.display = 'none';
       cockpitDiv.appendChild(bImg);
     }
+    // Flag and stopwatch indicator overlays
+    var flagImg = document.createElement('img');
+    flagImg.id = 'cockpit-flag';
+    flagImg.className = 'cockpit-indicator';
+    flagImg.src = 'images/indicators/flag-bright.png';
+    flagImg.style.display = 'none';
+    cockpitDiv.appendChild(flagImg);
+    var swImg = document.createElement('img');
+    swImg.id = 'cockpit-stopwatch';
+    swImg.className = 'cockpit-indicator';
+    swImg.src = 'images/indicators/stopwatch-bright.png';
+    swImg.style.display = 'none';
+    cockpitDiv.appendChild(swImg);
+    // Dust cloud particle images
+    for (var di = 0; di < DUST_COUNT; di++) {
+      var dcImg = document.createElement('img');
+      dcImg.className = 'dust-cloud';
+      dcImg.dataset.idx = di;
+      dcImg.src = 'images/dust/dust-cloud-0.png';
+      dcImg.style.display = 'none';
+      cockpitDiv.appendChild(dcImg);
+      dustParticles.push({ x: 0, y: 210, xVel: 0, yVel: 0 });
+    }
+    // Spark particle elements
+    for (var si = 0; si < SPARK_COUNT; si++) {
+      var sp = document.createElement('div');
+      sp.className = 'spark-particle';
+      sp.dataset.idx = si;
+      sp.style.display = 'none';
+      cockpitDiv.appendChild(sp);
+      sparkParticles.push({ x: 160, y: 200, yVel: 0, xVel: 0, color: '#fff', life: 0 });
+    }
+    // Damage hole/smash overlay images (10 slots, right to left)
+    var holeDiv = document.createElement('div');
+    holeDiv.id = 'damage-holes-overlay';
+    for (var di = 0; di < 10; di++) {
+      var dImg = document.createElement('img');
+      dImg.className = 'cockpit-damage-hole';
+      dImg.dataset.slot = di;
+      dImg.src = 'images/indicators/hole.png';
+      dImg.style.display = 'none';
+      dImg.style.left = 'calc(' + (264 - di * 24) + ' / 320 * 100%)';
+      holeDiv.appendChild(dImg);
+    }
+    document.body.appendChild(holeDiv);
     var cockpitCvs = document.createElement('canvas');
     cockpitCvs.id = 'cockpit-canvas';
     cockpitDiv.appendChild(cockpitCvs);
@@ -1574,7 +1630,8 @@
     'tc-back', 'tc-start',
     'tc-left', 'tc-right', 'tc-accel', 'tc-brake', 'tc-boost',
     'tc-menu', 'tc-hud-damage', 'tc-hud-box',
-    'tc-gameover-label', 'tc-gameover'
+    'tc-gameover-label', 'tc-gameover',
+    'chain-boost-hint'
   ];
 
   function hideAllUI() {
@@ -1584,6 +1641,8 @@
     }
     var co = document.getElementById('cockpit-overlay');
     if (co) co.style.display = 'none';
+    var dho = document.getElementById('damage-holes-overlay');
+    if (dho) dho.style.display = 'none';
     var cvs = document.getElementById('canvas');
     if (cvs) cvs.classList.remove('race-mode');
     delete window.gameCanvasWidth;
@@ -1613,9 +1672,13 @@
         showEls(['tc-menu']);
         var co = document.getElementById('cockpit-overlay');
         if (co) co.style.display = 'block';
+        var dho = document.getElementById('damage-holes-overlay');
+        if (dho) dho.style.display = 'block';
         var cvs = document.getElementById('canvas');
         if (cvs) cvs.classList.add('race-mode');
         if (isMobile) showEls(['tc-left', 'tc-right', 'tc-accel', 'tc-brake']);
+        resetDamageHoleOverlays();
+        resetDamagePath();
         break;
       // Season overlays managed by showOverlay()
     }
@@ -1656,6 +1719,10 @@
     clip.style.display = 'block';
     var img = document.getElementById('chain-img');
     img.style.top = chainScrollOffset + '%';
+
+    // Show/hide "press boost to drop" hint
+    var hint = document.getElementById('chain-boost-hint');
+    if (hint) hint.style.display = isChainBoostHintVisible() ? 'flex' : 'none';
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -1679,30 +1746,40 @@
     var scaleX = w / 320;
     var scaleY = h / 200;
 
-    // ── Damage bar: (41,3) to (279,3), 1px high ──
-    var dmgFrac = Math.min(1, getDamage() / 240);
-    if (dmgFrac > 0) {
-      var dmgX = 41 * scaleX;
-      var dmgY = 3 * scaleY;
-      var dmgW = 238 * dmgFrac * scaleX;
-      var dmgH = Math.max(1, 1 * scaleY);
-      ctx.fillStyle = '#ff3333';
-      ctx.fillRect(dmgX, dmgY, dmgW, dmgH);
-    }
+    // ── Damage bar: wavy black line (Amiga random-walk) ──
+    var dmg = Math.min(getDamage(), 240);
+    if (dmg > 0) {
+      extendDamagePathTo(dmg);
 
-    // ── Holes: 10 slots across the damage bar ──
-    var holePos = getDamageHolePosition();
-    var numHoles = 10 - holePos;
-    if (numHoles > 0) {
-      var slotW = 238 / 10 * scaleX;
-      var holeH = Math.max(1, 1 * scaleY);
-      ctx.fillStyle = 'rgba(0,0,0,0.75)';
-      for (var hi = 0; hi < numHoles; hi++) {
-        // Holes appear from right to left
-        var hx = (41 + (9 - hi) * 238 / 10) * scaleX;
-        ctx.fillRect(hx, 3 * scaleY, slotW, holeH);
+      var holePos = getDamageHolePosition();
+      var numHoles = 10 - holePos;
+      var pw = Math.max(1, Math.ceil(scaleX));
+      var ph = Math.max(1, Math.ceil(scaleY));
+
+      // Shade row first (behind the black line)
+      for (var dx = 0; dx < dmg; dx++) {
+        if (isDamagePixelInHole(40 + dx, numHoles)) continue;
+        var py = damagePath[dx];
+        if (py >= 2) {
+          ctx.fillStyle = damageShade[dx] ? '#555' : '#333';
+          ctx.fillRect((40 + dx) * scaleX, (py - 2) * scaleY, pw, ph);
+        }
+      }
+
+      // Black line: 2 rows at y and y-1
+      ctx.fillStyle = '#000';
+      for (var dx = 0; dx < dmg; dx++) {
+        if (isDamagePixelInHole(40 + dx, numHoles)) continue;
+        var py = damagePath[dx];
+        ctx.fillRect((40 + dx) * scaleX, py * scaleY, pw, ph);
+        if (py >= 1) {
+          ctx.fillRect((40 + dx) * scaleX, (py - 1) * scaleY, pw, ph);
+        }
       }
     }
+
+    // ── Holes: image-based overlays ──
+    updateDamageHoleOverlays();
 
     // ── Speed bar ──
     var speed = getDisplaySpeed();
@@ -1717,6 +1794,128 @@
       var yHeight = Math.max(1, 2 * scaleY);
       ctx.fillStyle = '#ffff00';
       ctx.fillRect(xLeft, yTop, xRight - xLeft, yHeight);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  DAMAGE HOLE / SMASH OVERLAYS
+  // ══════════════════════════════════════════════════════════════
+
+  function updateDamageHoleOverlays() {
+    var holePos = getDamageHolePosition();
+    var numHoles = 10 - holePos;
+
+    // Detect new holes (holePos decreased since last check)
+    if (holePos < prevDamageHolePosition) {
+      // New holes appeared — show smash for each new slot
+      for (var ni = 10 - prevDamageHolePosition; ni < numHoles; ni++) {
+        showSmashAtSlot(ni);
+      }
+    } else if (holePos > prevDamageHolePosition) {
+      // Holes were repaired — clear smash timers and hide repaired slots
+      for (var ri = numHoles; ri < 10 - prevDamageHolePosition; ri++) {
+        clearSmashTimer(ri);
+        var rImg = document.querySelector('.cockpit-damage-hole[data-slot="' + ri + '"]');
+        if (rImg) rImg.style.display = 'none';
+      }
+    }
+    prevDamageHolePosition = holePos;
+
+    // Show/hide each slot
+    var slots = document.querySelectorAll('.cockpit-damage-hole');
+    for (var si = 0; si < slots.length; si++) {
+      var slot = parseInt(slots[si].dataset.slot, 10);
+      if (slot < numHoles) {
+        slots[si].style.display = 'block';
+      } else {
+        slots[si].style.display = 'none';
+      }
+    }
+  }
+
+  function showSmashAtSlot(slotIndex) {
+    var img = document.querySelector('.cockpit-damage-hole[data-slot="' + slotIndex + '"]');
+    if (!img) return;
+    img.src = 'images/indicators/smash.png';
+    img.style.display = 'block';
+    clearSmashTimer(slotIndex);
+    smashTimers[slotIndex] = setTimeout(function () {
+      img.src = 'images/indicators/hole.png';
+      smashTimers[slotIndex] = null;
+    }, 1400);
+  }
+
+  function clearSmashTimer(slotIndex) {
+    if (smashTimers[slotIndex]) {
+      clearTimeout(smashTimers[slotIndex]);
+      smashTimers[slotIndex] = null;
+    }
+  }
+
+  // ── Wavy damage path helpers (Amiga random walk) ──────────
+
+  function resetDamagePath() {
+    damagePath = [];
+    damageShade = [];
+    damagePathY = 4;
+  }
+
+  function extendDamagePathTo(len) {
+    while (damagePath.length < len) {
+      var idx = damagePath.length;
+      var y = damagePathY;
+      var oldY = y;
+
+      // Only update Y on even indices (every other pixel)
+      if (idx % 2 === 0) {
+        var r = Math.random();
+        if (r >= 0.5) {
+          // 50%: try to change direction
+          if (r >= 0.75) {
+            // 25% total: try increment (up)
+            if (y < 5) {
+              y++;
+            } else {
+              // Already high — 50% redirect to decrement, 50% no change
+              if (Math.random() < 0.5) y--;
+            }
+          } else {
+            // 25% total: try decrement (down)
+            if (y >= 3) {
+              y--;
+            } else {
+              // Already low — 50% redirect to increment, 50% no change
+              if (Math.random() < 0.5) y++;
+            }
+          }
+        }
+      }
+
+      damageShade.push(y > oldY);
+      damagePathY = y;
+      damagePath.push(y & 7);
+    }
+  }
+
+  function isDamagePixelInHole(screenX, numHoles) {
+    for (var hi = 0; hi < numHoles; hi++) {
+      var holeLeft = 264 - hi * 24;
+      if (screenX >= holeLeft && screenX < holeLeft + 10) return true;
+    }
+    return false;
+  }
+
+  function resetDamageHoleOverlays() {
+    // Reset all overlays to match current damageHolePosition
+    var holePos = getDamageHolePosition();
+    var numHoles = 10 - holePos;
+    prevDamageHolePosition = holePos;
+    for (var i = 0; i < 10; i++) {
+      clearSmashTimer(i);
+      var img = document.querySelector('.cockpit-damage-hole[data-slot="' + i + '"]');
+      if (!img) continue;
+      img.src = 'images/indicators/hole.png';
+      img.style.display = (i < numHoles) ? 'block' : 'none';
     }
   }
 
@@ -1740,6 +1939,133 @@
     // Base Y = 149 (30px lower than original 119). Max bump moves up 40px.
     var offset = (diff / 0x1400) * 40;
     return Math.round(126 - offset);
+  }
+
+  // ── Dust cloud particle system (matches Amiga draw.dust.clouds) ──────────
+  function updateDustClouds() {
+    var els = document.querySelectorAll('.dust-cloud');
+    if (!els.length) return;
+
+    var offMap = !!Module._jsIsOffMap();
+    var onChains = isCarOnChains();
+    var touching = isTouchingRoad();
+    // Dust only when off-map AND touching ground AND not on chains
+    var showDust = offMap && touching && !onChains;
+
+    if (!showDust) {
+      if (dustActive) {
+        for (var i = 0; i < els.length; i++) els[i].style.display = 'none';
+        dustActive = false;
+      }
+      return;
+    }
+
+    dustActive = true;
+
+    // Throttle to ~12.5 fps to match Amiga frame rate
+    var now = performance.now();
+    var tick = now - dustLastTick >= 80;
+    if (tick) dustLastTick = now;
+
+    // Ferocity from z-speed (capped at 16, matches Amiga)
+    var zs = Math.abs(getPlayerZSpeed()) >> 8;
+    var ferocity = Math.min(zs, 16);
+
+    if (tick) dustFrameCounter++;
+
+    for (var i = 0; i < DUST_COUNT; i++) {
+      var p = dustParticles[i];
+
+      if (tick) {
+        // Apply gravity (+2 per tick) and move
+        p.yVel += 2;
+        p.y += p.yVel;
+        p.x += p.xVel;
+      }
+
+      // Reset particle if off-screen (Y >= 128 or out of X range)
+      if (p.y >= 128 || p.x < 0 || p.x > 255) {
+        // Random X: 0–255, random Y: 118–125
+        p.x = Math.floor(Math.random() * 256);
+        p.y = 118 + Math.floor(Math.random() * 8);
+        // Y velocity: upward, based on ferocity + random
+        p.yVel = -(Math.floor(ferocity / 2) + Math.floor(Math.random() * 8) + 1);
+        // X velocity: derived from position
+        p.xVel = Math.floor((p.y - 128) / 8);
+      }
+
+      // Only render if within viewport (y < 128, x 0–255)
+      if (p.y < 0 || p.y >= 128 || p.x < 0 || p.x > 255) {
+        els[i].style.display = 'none';
+        continue;
+      }
+
+      // Frame selection from sequence table (matches Amiga draw.spark.sub)
+      var seqIdx = (i + dustFrameCounter) & 0xf;
+      var frame = DUST_FRAME_SEQ[seqIdx];
+
+      // Screen position in 320×200 space
+      var drawX = p.x - DUST_X_OFFSET[frame] + 32;
+      var drawY = p.y + 16;
+
+      els[i].src = 'images/dust/dust-cloud-' + frame + '.png';
+      els[i].style.left = (drawX / 320 * 100) + '%';
+      els[i].style.top = (drawY / 200 * 100) + '%';
+      els[i].style.width = (DUST_W[frame] / 320 * 100) + '%';
+      els[i].style.height = (DUST_H[frame] / 200 * 100) + '%';
+      els[i].style.display = 'block';
+    }
+  }
+
+  // ── Spark particle system (matches Amiga draw.sparks) ────────────────────
+  function updateSparks() {
+    var els = document.querySelectorAll('.spark-particle');
+    if (!els.length) return;
+
+    var ferocity = getSparkFerocity();
+
+    // Throttle physics to ~12.5 fps (80ms) to match Amiga frame rate
+    var now = performance.now();
+    var tick = now - sparkLastTick >= 80;
+    if (tick) sparkLastTick = now;
+
+    // Visible area: x=32..287, y=16..143 in native 320×200 coords
+    var VIEW_LEFT = 32, VIEW_RIGHT = 288, VIEW_TOP = 16, VIEW_BOTTOM = 144;
+    var anyAlive = false;
+
+    for (var i = 0; i < SPARK_COUNT; i++) {
+      var p = sparkParticles[i];
+
+      if (tick && p.life > 0) {
+        p.yVel += 0.7;     // gentle gravity
+        p.y += p.yVel;
+        p.x += p.xVel;
+        p.life--;
+      }
+
+      // Dead or out of bounds — try to respawn only when ferocity > 0
+      if (p.life <= 0 || p.y >= VIEW_BOTTOM || p.y < VIEW_TOP ||
+          p.x < VIEW_LEFT || p.x >= VIEW_RIGHT) {
+        if (ferocity > 0 && tick && Math.random() < 0.3) {
+          p.x = VIEW_LEFT + 32 + Math.floor(Math.random() * 128);
+          p.y = VIEW_BOTTOM - 8 + Math.floor(Math.random() * 6);
+          p.yVel = -(ferocity / 8 + Math.random() * 4 + 1);
+          p.xVel = (Math.random() - 0.5) * 3;
+          // Amiga palette: color 15 = white, color 3 = yellow
+          p.color = Math.random() < 0.5 ? '#fff' : '#ff0';
+          p.life = 8 + Math.floor(Math.random() * 12);
+        } else {
+          els[i].style.display = 'none';
+          continue;
+        }
+      }
+
+      anyAlive = true;
+      els[i].style.left = (p.x / 320 * 100) + '%';
+      els[i].style.top = (p.y / 200 * 100) + '%';
+      els[i].style.backgroundColor = p.color;
+      els[i].style.display = 'block';
+    }
   }
 
   function updateWheels() {
@@ -1951,8 +2277,25 @@
         }
       }
 
+      // Flag indicator (bright when player is winning)
+      var flagEl = document.getElementById('cockpit-flag');
+      if (flagEl) flagEl.style.display = (!Module._jsIsSoloMode() && isPlayerWinning()) ? 'block' : 'none';
+
+      // Stopwatch indicator (bright when player has best lap)
+      var swEl = document.getElementById('cockpit-stopwatch');
+      if (swEl) {
+        var pBest = getPlayerBestLap(), oBest = getOpponentBestLap();
+        swEl.style.display = (!Module._jsIsSoloMode() && pBest > 0 && (oBest <= 0 || pBest <= oBest)) ? 'block' : 'none';
+      }
+
       // Wheel overlays
       updateWheels();
+
+      // Dust cloud particles
+      updateDustClouds();
+
+      // Spark particles
+      updateSparks();
     }
 
     // ── Multiplayer per-frame state exchange ──

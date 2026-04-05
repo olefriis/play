@@ -225,7 +225,8 @@
 
 /* ── Game over / result ──────────────────────────────────── */
 
-#tc-gameover-label {
+#tc-gameover-label,
+#chain-boost-hint {
   left: 50%; top: 40%;
   width: 80vw; height: auto;
   max-width: 500px;
@@ -426,6 +427,61 @@
   image-rendering: crisp-edges;
   pointer-events: none;
   z-index: 2;
+}
+
+.cockpit-indicator {
+  position: absolute;
+  width: calc(16 / 320 * 100%);
+  height: calc(8 / 200 * 100%);
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  pointer-events: none;
+  z-index: 2;
+}
+
+#cockpit-flag      { left: calc(96 / 320 * 100%);  top: calc(190 / 200 * 100%); }
+#cockpit-stopwatch { left: calc(208 / 320 * 100%); top: calc(190 / 200 * 100%); }
+
+.dust-cloud {
+  position: absolute;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  pointer-events: none;
+  z-index: -1;
+  display: none;
+}
+
+.spark-particle {
+  position: absolute;
+  width: calc(2 / 320 * 100%);
+  height: calc(2 / 200 * 100%);
+  pointer-events: none;
+  z-index: 0;
+  display: none;
+}
+
+.cockpit-damage-hole {
+  position: absolute;
+  top: 0;
+  width: calc(32 / 320 * 100%);
+  height: calc(8 / 200 * 100%);
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  pointer-events: none;
+  display: none;
+}
+
+#damage-holes-overlay {
+  position: fixed;
+  left: 50%; top: 50%;
+  width: min(100vw, calc(100vh * 8 / 5));
+  height: min(100vh, calc(100vw * 5 / 8));
+  width: min(100dvw, calc(100dvh * 8 / 5));
+  height: min(100dvh, calc(100dvw * 5 / 8));
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 101;
+  display: none;
 }
 
 .cockpit-wheel {

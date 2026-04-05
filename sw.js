@@ -1,7 +1,7 @@
 // Service worker for Stunt Car Racer PWA
 // Caches game files for offline play and home-screen launch
 
-var CACHE_NAME = 'scr-v79';
+var CACHE_NAME = 'scr-v84';
 var ASSETS = [
   'source.html',
   'source.js',
@@ -14,15 +14,27 @@ var ASSETS = [
   'icon-512.png',
   'images/cockpit.png',
   'images/chains.png',
-  'images/boost-1.png',
-  'images/boost-2.png',
-  'images/boost-3.png',
-  'images/left-wheel-0.png',
-  'images/left-wheel-1.png',
-  'images/left-wheel-2.png',
-  'images/right-wheel-0.png',
-  'images/right-wheel-1.png',
-  'images/right-wheel-2.png'
+  'images/boost/boost-1.png',
+  'images/boost/boost-2.png',
+  'images/boost/boost-3.png',
+  'images/wheels/left-wheel-0.png',
+  'images/wheels/left-wheel-1.png',
+  'images/wheels/left-wheel-2.png',
+  'images/wheels/right-wheel-0.png',
+  'images/wheels/right-wheel-1.png',
+  'images/wheels/right-wheel-2.png',
+  'images/indicators/hole.png',
+  'images/indicators/smash.png',
+  'images/indicators/flag-bright.png',
+  'images/indicators/stopwatch-bright.png',
+  'images/dust/dust-cloud-0.png',
+  'images/dust/dust-cloud-1.png',
+  'images/dust/dust-cloud-2.png',
+  'images/dust/dust-cloud-3.png',
+  'images/dust/dust-cloud-4.png',
+  'images/dust/dust-cloud-5.png',
+  'images/dust/dust-cloud-6.png',
+  'images/dust/dust-cloud-7.png'
 ];
 
 // Install: pre-cache core assets
